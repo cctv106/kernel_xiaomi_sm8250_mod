@@ -5,6 +5,7 @@
 #define _TRACE_KSU_TRACE_H
 
 #include <linux/tracepoint.h>
+#include <linux/fs.h>
 
 DECLARE_TRACE(ksu_do_execve_hook,
 	TP_PROTO(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags),
