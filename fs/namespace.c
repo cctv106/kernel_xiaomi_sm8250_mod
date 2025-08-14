@@ -1849,6 +1849,39 @@ static inline bool may_mandlock(void)
 }
 #endif
 
+static int can_umount(const struct path *path, int flags)
+{
+	struct mount *mnt = real_mount(path->mnt);
+
+	if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
+		return -EINVAL;
+	if (!may_mount())
+		return -EPERM;
+	if (path->dentry != path->mnt->mnt_root)
+		return -EINVAL;
+	if (!check_mnt(mnt))
+		return -EINVAL;
+	if (mnt->mnt.mnt_flags & MNT_LOCKED) /* Check optimistically */
+		return -EINVAL;
+	if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	return 0;
+}
+
+int path_umount(struct path *path, int flags)
+{
+	struct mount *mnt = real_mount(path->mnt);
+	int ret;
+
+	ret = can_umount(path, flags);
+	if (!ret)
+		ret = do_umount(mnt, flags);
+
+	/* we mustn't call path_put() as that would clear mnt_expiry_mark */
+	dput(path->dentry);
+	mntput_no_expire(mnt);
+	return ret;
+}
 /*
  * Now umount can handle mount points as well as block devices.
  * This is important for filesystems which use unnamed block devices.
@@ -2000,7 +2033,7 @@ struct mount *copy_tree(struct mount *mnt, struct dentry *dentry,
 			list_add_tail(&q->mnt_list, &res->mnt_list);
 			attach_mnt(q, parent, p->mnt_mp);
 			#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-				if (is_zygote_not_copy_mnt_ns &&
+			if (is_zygote_not_copy_mnt_ns &&
 				q->mnt_id < DEFAULT_SUS_MNT_ID)
 			{
 				attach_mnt_count++;
@@ -3219,6 +3252,12 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
 	 */
 	p = old;
 	q = new;
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	if (likely(is_zygote_pid)) {
+		last_entry_mnt_id = new->mnt_id;
+		q->mnt.susfs_mnt_id_backup = new->mnt_id;
+	}
+#endif
 	while (p) {
 		q->mnt_ns = new_ns;
 		new_ns->mounts++;
@@ -3245,17 +3284,9 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
 			q->mnt_id = ++last_entry_mnt_id;
 		}
 #endif
-		p = old;
-	 	q = new;
-
+		while (p->mnt.mnt_root != q->mnt.mnt_root)
+			p = next_mnt(p, old);
 	}
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-		if (likely(is_zygote_pid)) {
-		last_entry_mnt_id = new->mnt_id;
-		q->mnt.susfs_mnt_id_backup = new->mnt_id;
-	}
-#endif
-
 	namespace_unlock();
 
 	if (rootmnt)
@@ -3339,14 +3370,6 @@ int ksys_mount(char __user *dev_name, char __user *dir_name, char __user *type,
 		goto out_data;
 
 	ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
-
-#if defined(CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT) && defined(CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT)
-	// Just for the compatibility of Magic Mount KernelSU
-	if (!ret && susfs_is_auto_add_sus_ksu_default_mount_enabled && susfs_is_current_ksu_domain()) {
-		susfs_auto_add_sus_ksu_default_mount(dir_name);
-	}
-#endif
-
 
 	kfree(options);
 out_data:
